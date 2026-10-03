@@ -1,0 +1,9 @@
+data/
+**/.venv/
+__pycache__/
+*.pt
+*.task
+pipeline/spikes/models/
+ios/**/xcuserdata/
+DerivedData/
+.DS_Store
