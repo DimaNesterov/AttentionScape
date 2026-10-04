@@ -16,6 +16,20 @@ struct SessionInfo: Codable {
     var notes = ""
 }
 
+/// Краткое описание сессии для списка в приложении.
+struct SessionSummary: Identifiable, Hashable {
+    let id: String      // имя папки = session_id
+    let url: URL
+    let vertices: Int
+    let faces: Int
+    let frames: Int
+}
+
+private struct SessionHeader: Decodable {
+    let n_vertices: Int?
+    let n_faces: Int?
+}
+
 /// Метаданные кадра: capture/frames/NNNNNN.json (docs/data_spec.md, раздел 4.3).
 struct FrameMeta: Codable {
     struct ImageInfo: Codable {
@@ -81,6 +95,45 @@ enum SessionFiles {
             && fm.fileExists(atPath: scan.appendingPathComponent("worldmap.arworldmap").path)
     }
 
+    /// Все полные сессии, новые сверху.
+    static func listCompleteSessions() -> [SessionSummary] {
+        let fm = FileManager.default
+        guard let items = try? fm.contentsOfDirectory(
+            at: sessionsRoot, includingPropertiesForKeys: [.isDirectoryKey]) else { return [] }
+        return items
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            .filter { isComplete($0) }
+            .map { dir in
+                let header = (try? Data(contentsOf: dir.appendingPathComponent("session.json")))
+                    .flatMap { try? JSONDecoder().decode(SessionHeader.self, from: $0) }
+                return SessionSummary(
+                    id: dir.lastPathComponent,
+                    url: dir,
+                    vertices: header?.n_vertices ?? 0,
+                    faces: header?.n_faces ?? 0,
+                    frames: frameCount(sessionDir: dir))
+            }
+            .sorted { $0.id > $1.id }
+    }
+
+    static func frameCount(sessionDir: URL) -> Int {
+        let dir = sessionDir
+            .appendingPathComponent("capture", isDirectory: true)
+            .appendingPathComponent("frames", isDirectory: true)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return names.filter { $0.hasSuffix(".json") }.count
+    }
+
+    /// Удаляет старые архивы для отправки (вызывается при запуске приложения).
+    static func cleanupTemporaryZips() {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory
+        let names = (try? fm.contentsOfDirectory(atPath: tmp.path)) ?? []
+        for name in names where name.hasSuffix(".zip") {
+            try? fm.removeItem(at: tmp.appendingPathComponent(name))
+        }
+    }
+
     static func isoNow() -> String {
         ISO8601DateFormatter().string(from: Date())
     }
@@ -104,26 +157,27 @@ enum SessionFiles {
         try encoder.encode(value).write(to: url, options: .atomic)
     }
 
-    /// Упаковывает папку сессии в .zip (для отправки на Mac через AirDrop).
+    /// Упаковывает папку сессии в .zip (для отправки на Mac).
+    /// У каждого архива своё имя, поэтому повторное нажатие Share не ломает идущую передачу.
     static func zip(_ dir: URL) throws -> URL {
+        let stamp = Int(Date().timeIntervalSince1970)
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(dir.lastPathComponent)-\(stamp).zip")
         var coordinatorError: NSError?
         var copyError: Error?
-        var result: URL?
+        var copied = false
         NSFileCoordinator().coordinate(readingItemAt: dir, options: .forUploading, error: &coordinatorError) { zipURL in
-            let destination = FileManager.default.temporaryDirectory
-                .appendingPathComponent(dir.lastPathComponent + ".zip")
             do {
-                try? FileManager.default.removeItem(at: destination)
                 try FileManager.default.copyItem(at: zipURL, to: destination)
-                result = destination
+                copied = true
             } catch {
                 copyError = error
             }
         }
         if let coordinatorError { throw coordinatorError }
         if let copyError { throw copyError }
-        guard let result else { throw CocoaError(.fileWriteUnknown) }
-        return result
+        guard copied else { throw CocoaError(.fileWriteUnknown) }
+        return destination
     }
 
     // MARK: - Capture

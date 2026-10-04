@@ -33,6 +33,12 @@ final class ScanController: NSObject, ObservableObject {
     @Published var shareItem: ShareItem?
     @Published var isRecording = false
     @Published var recordedFrames = 0
+    @Published var sessions: [SessionSummary] = []
+    @Published var selectedSessionID: String?
+
+    var selectedSession: SessionSummary? {
+        sessions.first { $0.id == selectedSessionID }
+    }
 
     let arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
 
@@ -46,9 +52,44 @@ final class ScanController: NSObject, ObservableObject {
     private var recordTask: Task<Void, Never>?
     private let ciContext = CIContext()
 
+    // Подсказка, если привязка долго не удаётся
+    private var relocalizeStartTime: TimeInterval?
+    private var relocalizeHintShown = false
+
     override init() {
         super.init()
         arView.session.delegate = self
+        SessionFiles.cleanupTemporaryZips()
+        refreshSessions()
+    }
+
+    // MARK: - Sessions
+
+    func refreshSessions() {
+        sessions = SessionFiles.listCompleteSessions()
+        if selectedSession == nil {
+            selectedSessionID = sessions.first?.id
+        }
+    }
+
+    func selectSession(_ id: String) {
+        selectedSessionID = id
+        status = "Selected \(id). Tap Relocalize."
+    }
+
+    func deleteSession(_ id: String) {
+        guard let session = sessions.first(where: { $0.id == id }) else { return }
+        if relocalizedSessionDir == session.url {
+            stopRecordingIfNeeded()
+            removeOverlay()
+            relocalizedSessionDir = nil
+            arView.session.pause()
+            mode = .idle
+        }
+        try? FileManager.default.removeItem(at: session.url)
+        if selectedSessionID == id { selectedSessionID = nil }
+        refreshSessions()
+        status = "Deleted \(id)"
     }
 
     // MARK: - Scanning
@@ -149,15 +190,17 @@ final class ScanController: NSObject, ObservableObject {
         arView.debugOptions = []
         liveChunks = ""
         meshInfo = "\(info.n_vertices) vertices, \(info.n_faces) triangles"
+        refreshSessions()
+        selectedSessionID = info.session_id
         mode = .idle
         status = "Saved \(info.session_id). Tap Relocalize to check it, or Start scan for a new one."
     }
 
     // MARK: - Relocalization
 
-    func relocalizeLatest() {
-        guard let sessionDir = SessionFiles.latestSessionDir() else {
-            status = "No complete saved session yet"
+    func relocalizeSelected() {
+        guard let sessionDir = selectedSession?.url else {
+            status = "No saved session selected"
             return
         }
         stopRecordingIfNeeded()
@@ -185,6 +228,8 @@ final class ScanController: NSObject, ObservableObject {
             arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
 
             relocalizedSessionDir = sessionDir
+            relocalizeStartTime = nil
+            relocalizeHintShown = false
             mode = .relocalizing
             liveChunks = ""
             meshInfo = "\(sessionDir.lastPathComponent): \(mesh.positions.count) vertices"
@@ -203,9 +248,9 @@ final class ScanController: NSObject, ObservableObject {
 
     // MARK: - Sharing
 
-    func shareLatest() {
-        guard let sessionDir = SessionFiles.latestSessionDir() else {
-            status = "No complete saved session yet"
+    func shareSelected() {
+        guard let sessionDir = selectedSession?.url else {
+            status = "No saved session selected"
             return
         }
         do {
@@ -255,6 +300,7 @@ final class ScanController: NSObject, ObservableObject {
         recordTask = nil
         isRecording = false
         UIApplication.shared.isIdleTimerDisabled = false
+        refreshSessions()
         status = "Recorded \(recordedFrames) frames. Tap Share to send the session to the Mac."
     }
 
@@ -301,6 +347,16 @@ final class ScanController: NSObject, ObservableObject {
     // MARK: - Frame updates
 
     fileprivate func apply(time: TimeInterval, tracking: String, isNormal: Bool, mapping: String, meshAnchors: Int) {
+        if mode == .relocalizing && !isNormal {
+            if let start = relocalizeStartTime {
+                if time - start > 30 && !relocalizeHintShown {
+                    relocalizeHintShown = true
+                    status = "Still searching. Stand where the scan started, use the same lighting, aim at furniture — or make a new scan."
+                }
+            } else {
+                relocalizeStartTime = time
+            }
+        }
         if mode == .relocalizing && isNormal {
             overlay?.isEnabled = true
             mode = .relocalized
