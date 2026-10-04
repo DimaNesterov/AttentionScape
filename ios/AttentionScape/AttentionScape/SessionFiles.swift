@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import simd
 
 /// Содержимое sessions/<id>/session.json (см. docs/data_spec.md, раздел 4.1).
 struct SessionInfo: Codable {
@@ -13,6 +14,25 @@ struct SessionInfo: Codable {
     var n_vertices: Int
     var n_faces: Int
     var notes = ""
+}
+
+/// Метаданные кадра: capture/frames/NNNNNN.json (docs/data_spec.md, раздел 4.3).
+struct FrameMeta: Codable {
+    struct ImageInfo: Codable {
+        var file: String
+        var width: Int
+        var height: Int
+    }
+    struct CameraInfo: Codable {
+        var T_world_from_camera_ar: [Float]   // 4×4 построчно
+        var K: [Float]                        // 3×3 построчно
+        var tracking_state: String
+    }
+    var index: Int
+    var timestamp: Double
+    var wall_time_utc: String
+    var image: ImageInfo
+    var camera: CameraInfo
 }
 
 enum SessionFiles {
@@ -104,5 +124,35 @@ enum SessionFiles {
         if let copyError { throw copyError }
         guard let result else { throw CocoaError(.fileWriteUnknown) }
         return result
+    }
+
+    // MARK: - Capture
+
+    /// Создаёт sessions/<id>/capture/frames/ и возвращает путь к ней.
+    static func makeFramesDir(sessionDir: URL) throws -> URL {
+        let url = sessionDir
+            .appendingPathComponent("capture", isDirectory: true)
+            .appendingPathComponent("frames", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    /// Следующий свободный номер кадра (повторная запись продолжает нумерацию).
+    static func nextFrameIndex(framesDir: URL) -> Int {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: framesDir.path)) ?? []
+        let used = names.compactMap { name -> Int? in
+            guard name.hasSuffix(".json") else { return nil }
+            return Int(name.dropLast(5))
+        }
+        return (used.max() ?? 0) + 1
+    }
+
+    /// simd хранит матрицы по столбцам; в JSON пишем построчно (data_spec.md, раздел 2).
+    static func rowMajor(_ m: simd_float4x4) -> [Float] {
+        (0..<4).flatMap { r in [m.columns.0[r], m.columns.1[r], m.columns.2[r], m.columns.3[r]] }
+    }
+
+    static func rowMajor(_ m: simd_float3x3) -> [Float] {
+        (0..<3).flatMap { r in [m.columns.0[r], m.columns.1[r], m.columns.2[r]] }
     }
 }

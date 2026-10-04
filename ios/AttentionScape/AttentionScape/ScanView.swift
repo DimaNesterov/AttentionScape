@@ -27,15 +27,25 @@ struct ScanView: View {
 
                 HStack {
                     Button("Start scan") { controller.startScan() }
-                        .disabled(controller.mode == .saving)
+                        .disabled(controller.mode == .saving || controller.isRecording)
                     Button("Save") { controller.saveScan() }
                         .disabled(controller.mode != .scanning)
                 }
                 HStack {
                     Button("Relocalize") { controller.relocalizeLatest() }
-                        .disabled(controller.mode == .saving)
+                        .disabled(controller.mode == .saving || controller.isRecording)
                     Button("Share") { controller.shareLatest() }
-                        .disabled(controller.mode == .saving)
+                        .disabled(controller.mode == .saving || controller.isRecording)
+                }
+                HStack {
+                    Button(controller.isRecording ? "Stop" : "Record") { controller.toggleRecording() }
+                        .disabled(controller.mode != .relocalized)
+                        .tint(controller.isRecording ? .red : nil)
+                    if controller.isRecording {
+                        Text("● \(controller.recordedFrames) frames")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
             }
             .buttonStyle(.borderedProminent)

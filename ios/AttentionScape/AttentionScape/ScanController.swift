@@ -1,5 +1,8 @@
 import ARKit
 import Combine
+import CoreGraphics
+import CoreImage
+import CoreVideo
 import Foundation
 import RealityKit
 import SwiftUI
@@ -28,11 +31,20 @@ final class ScanController: NSObject, ObservableObject {
     @Published var meshInfo = ""
     @Published var liveChunks = ""
     @Published var shareItem: ShareItem?
+    @Published var isRecording = false
+    @Published var recordedFrames = 0
 
     let arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
 
     private var overlay: AnchorEntity?
     private var lastUIUpdate: TimeInterval = 0
+
+    // Запись кадров (неделя 2)
+    private var relocalizedSessionDir: URL?
+    private var framesDir: URL?
+    private var nextFrameIndex = 1
+    private var recordTask: Task<Void, Never>?
+    private let ciContext = CIContext()
 
     override init() {
         super.init()
@@ -46,7 +58,9 @@ final class ScanController: NSObject, ObservableObject {
             status = "This device does not support LiDAR scene reconstruction"
             return
         }
+        stopRecordingIfNeeded()
         removeOverlay()
+        relocalizedSessionDir = nil
         let config = ARWorldTrackingConfiguration()
         config.sceneReconstruction = .meshWithClassification
         config.environmentTexturing = .none
@@ -146,6 +160,7 @@ final class ScanController: NSObject, ObservableObject {
             status = "No complete saved session yet"
             return
         }
+        stopRecordingIfNeeded()
         let scanDir = sessionDir.appendingPathComponent("scan", isDirectory: true)
         do {
             let mapData = try Data(contentsOf: scanDir.appendingPathComponent("worldmap.arworldmap"))
@@ -169,6 +184,7 @@ final class ScanController: NSObject, ObservableObject {
             arView.debugOptions = []
             arView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
 
+            relocalizedSessionDir = sessionDir
             mode = .relocalizing
             liveChunks = ""
             meshInfo = "\(sessionDir.lastPathComponent): \(mesh.positions.count) vertices"
@@ -199,13 +215,96 @@ final class ScanController: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Recording (камера на штативе)
+
+    func toggleRecording() {
+        if isRecording {
+            stopRecording()
+        } else {
+            startRecording()
+        }
+    }
+
+    private func startRecording() {
+        guard mode == .relocalized, let sessionDir = relocalizedSessionDir else {
+            status = "Relocalize first, then Record"
+            return
+        }
+        do {
+            let dir = try SessionFiles.makeFramesDir(sessionDir: sessionDir)
+            framesDir = dir
+            nextFrameIndex = SessionFiles.nextFrameIndex(framesDir: dir)
+        } catch {
+            status = "Cannot create capture folder: \(error.localizedDescription)"
+            return
+        }
+        recordedFrames = 0
+        isRecording = true
+        UIApplication.shared.isIdleTimerDisabled = true   // экран не гаснет, пока телефон на штативе
+        status = "Recording 1 frame per second… Tap Stop when done."
+        recordTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                self?.captureFrame()
+            }
+        }
+    }
+
+    private func stopRecording() {
+        recordTask?.cancel()
+        recordTask = nil
+        isRecording = false
+        UIApplication.shared.isIdleTimerDisabled = false
+        status = "Recorded \(recordedFrames) frames. Tap Share to send the session to the Mac."
+    }
+
+    private func stopRecordingIfNeeded() {
+        if isRecording { stopRecording() }
+    }
+
+    /// Сохраняет текущий кадр камеры и его метаданные (data_spec.md, раздел 4.3).
+    private func captureFrame() {
+        guard isRecording, let framesDir, let frame = arView.session.currentFrame else { return }
+        guard case .normal = frame.camera.trackingState else {
+            status = "Tracking limited — frame skipped"
+            return
+        }
+        let buffer = frame.capturedImage                  // ландшафтная ориентация сенсора, без поворота
+        let width = CVPixelBufferGetWidth(buffer)
+        let height = CVPixelBufferGetHeight(buffer)
+        let image = CIImage(cvPixelBuffer: buffer)
+        guard let jpeg = ciContext.jpegRepresentation(of: image, colorSpace: CGColorSpaceCreateDeviceRGB(), options: [:]) else {
+            status = "JPEG encoding failed"
+            return
+        }
+        let name = String(format: "%06d", nextFrameIndex)
+        let meta = FrameMeta(
+            index: nextFrameIndex,
+            timestamp: frame.timestamp,
+            wall_time_utc: SessionFiles.isoNow(),
+            image: .init(file: "frames/\(name).jpg", width: width, height: height),
+            camera: .init(
+                T_world_from_camera_ar: SessionFiles.rowMajor(frame.camera.transform),
+                K: SessionFiles.rowMajor(frame.camera.intrinsics),
+                tracking_state: "normal"))
+        do {
+            try jpeg.write(to: framesDir.appendingPathComponent("\(name).jpg"), options: .atomic)
+            try SessionFiles.writeJSON(meta, to: framesDir.appendingPathComponent("\(name).json"))
+            nextFrameIndex += 1
+            recordedFrames += 1
+            status = "Recording… \(recordedFrames) frames"
+        } catch {
+            status = "Frame save failed: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Frame updates
 
     fileprivate func apply(time: TimeInterval, tracking: String, isNormal: Bool, mapping: String, meshAnchors: Int) {
         if mode == .relocalizing && isNormal {
             overlay?.isEnabled = true
             mode = .relocalized
-            status = "Relocalized. Check that the colored 3D mesh sits on real furniture, edges and corners."
+            status = "Relocalized. Put the phone on the tripod and tap Record."
         }
         guard time - lastUIUpdate > 0.3 else { return }
         lastUIUpdate = time
