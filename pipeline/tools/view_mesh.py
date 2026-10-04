@@ -130,8 +130,10 @@ renderer.setAnimationLoop(()=>{controls.update();renderer.render(scene,camera);}
 """
 
 
-def build_viewer_html(session: Path, extra_js: str = "", extra_info: str = "", verbose: bool = True) -> str:
-    """HTML-просмотрщик меша сессии. extra_js выполняется в том же модуле (доступны THREE и scene)."""
+def build_viewer_html(session: Path, extra_js: str = "", extra_info: str = "", verbose: bool = True,
+                      vertex_colors=None, legend_html=None) -> str:
+    """HTML-просмотрщик меша сессии. extra_js выполняется в том же модуле (доступны THREE и scene).
+    vertex_colors — свои цвета вершин (N×3 uint8) вместо цветов классов; legend_html — своя легенда."""
     ply = session / "scan" / "mesh.ply"
     if not ply.exists():
         sys.exit(f"Не найден {ply}")
@@ -145,6 +147,8 @@ def build_viewer_html(session: Path, extra_js: str = "", extra_info: str = "", v
     palette = np.array([CLASSES.get(i, CLASSES[0])[1] for i in range(256)], dtype=np.uint8)
     vcol = np.zeros((nv, 3), dtype=np.uint8)
     vcol[idx.reshape(-1)] = np.repeat(palette[cls], 3, axis=0)
+    if vertex_colors is not None:
+        vcol = np.ascontiguousarray(vertex_colors, dtype=np.uint8)
 
     ceil_mask = cls == 3
     idx_rest = idx[~ceil_mask].reshape(-1)
@@ -158,7 +162,7 @@ def build_viewer_html(session: Path, extra_js: str = "", extra_info: str = "", v
         print(f"Размеры (м):   X {dims[0]:.2f}  ×  Y (высота) {dims[1]:.2f}  ×  Z {dims[2]:.2f}")
         print("Классы:        " + ", ".join(f"{k}: {v:,}" for k, v in sorted(counts.items(), key=lambda x: -x[1])))
 
-    legend = "".join(
+    legend = legend_html if legend_html is not None else "".join(
         f'<span class="sw" style="background:rgb{CLASSES[k][1]}"></span>{CLASSES[k][0]} ({counts.get(CLASSES[k][0], 0):,})<br>'
         for k in sorted(CLASSES))
     info = (f"<b>{session.name}</b><br>{nv:,} вершин · {nf:,} треугольников<br>"

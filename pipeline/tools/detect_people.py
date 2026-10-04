@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # папка pipel
 from ascape.geometry import (closest_on_ray_to_vertical, floor_height,  # noqa: E402
                              intersect_horizontal, pixel_ray)
 from ascape.io import load_frames, load_mesh  # noqa: E402
+from ascape.orient import points_from_rotated, points_to_rotated, rotate_image, upright_rotation  # noqa: E402
 
 KP_CONF = 0.35
 HEAD_KP = (0, 1, 2, 3, 4)          # нос, глаза, уши (COCO)
@@ -56,15 +57,18 @@ def foot_pixel(kxy, kc, box, image_height):
     return None, None
 
 
-def locate_person(frame, kxy, kc, box, y_floor):
-    """3D-положение головы и ступней в W. Возвращает словарь с методом и проверками."""
-    head_uv, head_from_kp = head_pixel(kxy, kc, box)
+def locate_person(frame, kxy_up, kc, box_up, up_height, to_frame, y_floor):
+    """3D-положение головы и ступней в W.
+    Точки головы/ступней выбираются в развёрнутой («верхом вверх») картинке, затем
+    переводятся в пиксели исходного кадра (to_frame) и превращаются в лучи."""
+    head_up, head_from_kp = head_pixel(kxy_up, kc, box_up)
+    foot_up, foot_h = foot_pixel(kxy_up, kc, box_up, up_height)
+    head_uv = to_frame(head_up)
     origin, head_dir = pixel_ray(frame, *head_uv)
-    foot_uv, foot_h = foot_pixel(kxy, kc, box, frame.height)
 
     head_w, foot_w, method = None, None, None
-    if foot_uv is not None:
-        o, d = pixel_ray(frame, *foot_uv)
+    if foot_up is not None:
+        o, d = pixel_ray(frame, *to_frame(foot_up))
         foot_w = intersect_horizontal(o, d, y_floor + foot_h)
         if foot_w is not None:
             foot_w = foot_w.copy()
@@ -124,16 +128,20 @@ class Tracker3D:
             p["track"] = track["id"]
 
 
-def annotate(image, people, kxy_all, scale, font):
+def annotate(image, people, kxy_all, to_vis, font):
+    """Рисует людей на (развёрнутой) картинке; to_vis переводит пиксели кадра в пиксели картинки."""
     draw = ImageDraw.Draw(image)
     for p, kxy in zip(people, kxy_all):
         color = TRACK_COLORS[(p["track"] - 1) % len(TRACK_COLORS)] if p["track"] else (180, 180, 180)
-        x1, y1, x2, y2 = [c * scale for c in p["bbox"]]
+        corners = to_vis(np.array([[p["bbox"][0], p["bbox"][1]], [p["bbox"][2], p["bbox"][3]]]))
+        x1, y1 = corners.min(axis=0)
+        x2, y2 = corners.max(axis=0)
         draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
+        pts = to_vis(np.asarray(kxy))
         for a, b in SKELETON:
             if p["kp_conf"][a] > KP_CONF and p["kp_conf"][b] > KP_CONF:
-                draw.line([tuple(kxy[a] * scale), tuple(kxy[b] * scale)], fill=color, width=3)
-        hx, hy = p["head_px"][0] * scale, p["head_px"][1] * scale
+                draw.line([tuple(pts[a]), tuple(pts[b])], fill=color, width=3)
+        hx, hy = to_vis(np.array(p["head_px"]))
         draw.ellipse([hx - 7, hy - 7, hx + 7, hy + 7], outline=(255, 255, 255), width=3)
         label = f"#{p['track']}  " if p["track"] else ""
         if p["height_m"] is not None:
@@ -170,28 +178,47 @@ def main():
     except TypeError:
         font = ImageFont.load_default()
 
+    k0 = upright_rotation(frames[0])
+    if k0:
+        print(f"Кадры повёрнуты на {90 * k0}° относительно вертикали — разворачиваю перед распознаванием")
+
     result_frames = []
     for frame in frames:
         image = Image.open(frame.image_path).convert("RGB")
-        res = model.predict(image, conf=args.conf, classes=[0], verbose=False)[0]
+        k = upright_rotation(frame)
+        upright = rotate_image(image, k)
+        res = model.predict(upright, conf=args.conf, classes=[0], verbose=False)[0]
         people, kxy_list = [], []
+
+        def to_frame(points, k=k, frame=frame):
+            return points_from_rotated(np.asarray(points, dtype=float), k, frame.width, frame.height)
+
         if res.boxes is not None and len(res.boxes) and res.keypoints is not None:
-            boxes = res.boxes.xyxy.cpu().numpy()
+            boxes_up = res.boxes.xyxy.cpu().numpy()
             scores = res.boxes.conf.cpu().numpy()
-            kxy_all = res.keypoints.xy.cpu().numpy()
+            kxy_up_all = res.keypoints.xy.cpu().numpy()
             kc_all = (res.keypoints.conf.cpu().numpy() if res.keypoints.conf is not None
-                      else np.ones(kxy_all.shape[:2]))
-            for box, score, kxy, kc in zip(boxes, scores, kxy_all, kc_all):
-                p = locate_person(frame, kxy, kc, box, y_floor)
+                      else np.ones(kxy_up_all.shape[:2]))
+            for box_up, score, kxy_up, kc in zip(boxes_up, scores, kxy_up_all, kc_all):
+                p = locate_person(frame, kxy_up, kc, box_up, upright.size[1], to_frame, y_floor)
+                corners = to_frame(box_up.reshape(2, 2))
+                box = np.concatenate([corners.min(axis=0), corners.max(axis=0)])
+                kxy = to_frame(kxy_up)
                 p.update(bbox=[round(float(c), 1) for c in box], score=round(float(score), 3),
-                         kp_conf=[round(float(c), 2) for c in kc])
+                         kp_conf=[round(float(c), 2) for c in kc],
+                         kp_xy=[[round(float(x), 1), round(float(y), 1)] for x, y in kxy])
                 people.append(p)
                 kxy_list.append(kxy)
         tracker.update(frame.index, people)
 
-        scale = args.width / frame.width
-        vis = image.resize((args.width, int(round(frame.height * scale))))
-        annotate(vis, people, kxy_list, scale, font)
+        scale = args.width / max(frame.width, frame.height)
+        vw, vh = frame.width * scale, frame.height * scale
+        vis = rotate_image(image.resize((int(round(vw)), int(round(vh)))), k)
+
+        def to_vis(points, k=k, vw=vw, vh=vh, scale=scale):
+            return points_to_rotated(np.asarray(points, dtype=float) * scale, k, vw, vh)
+
+        annotate(vis, people, kxy_list, to_vis, font)
         vis.save(out_dir / f"annotated_{frame.index:06d}.jpg", quality=88)
 
         result_frames.append({"index": frame.index, "timestamp": frame.timestamp,
