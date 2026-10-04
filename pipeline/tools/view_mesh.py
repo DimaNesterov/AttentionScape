@@ -124,18 +124,14 @@ window.addEventListener('keydown', e=>{
   if(e.key==='c'||e.key==='C'){ceil.visible=!ceil.visible;}
   if(e.key==='w'||e.key==='W'){rest.material.wireframe=!rest.material.wireframe;ceil.material.wireframe=rest.material.wireframe;}
 });
+// __EXTRA_JS__
 renderer.setAnimationLoop(()=>{controls.update();renderer.render(scene,camera);});
 </script></body></html>
 """
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("session", help="папка сессии, например data/sessions/20261003-201659-scan")
-    ap.add_argument("--no-open", action="store_true", help="не открывать браузер")
-    args = ap.parse_args()
-
-    session = Path(args.session)
+def build_viewer_html(session: Path, extra_js: str = "", extra_info: str = "", verbose: bool = True) -> str:
+    """HTML-просмотрщик меша сессии. extra_js выполняется в том же модуле (доступны THREE и scene)."""
     ply = session / "scan" / "mesh.ply"
     if not ply.exists():
         sys.exit(f"Не найден {ply}")
@@ -155,26 +151,39 @@ def main():
     idx_ceil = idx[ceil_mask].reshape(-1)
 
     counts = {CLASSES[k][0]: int(v) for k, v in zip(*np.unique(cls, return_counts=True)) if k in CLASSES}
-    print(f"Сессия:        {session.name}")
-    print(f"Вершины:       {nv:,}")
-    print(f"Треугольники:  {nf:,}")
-    print(f"Размеры (м):   X {dims[0]:.2f}  ×  Y (высота) {dims[1]:.2f}  ×  Z {dims[2]:.2f}")
-    print("Классы:        " + ", ".join(f"{k}: {v:,}" for k, v in sorted(counts.items(), key=lambda x: -x[1])))
+    if verbose:
+        print(f"Сессия:        {session.name}")
+        print(f"Вершины:       {nv:,}")
+        print(f"Треугольники:  {nf:,}")
+        print(f"Размеры (м):   X {dims[0]:.2f}  ×  Y (высота) {dims[1]:.2f}  ×  Z {dims[2]:.2f}")
+        print("Классы:        " + ", ".join(f"{k}: {v:,}" for k, v in sorted(counts.items(), key=lambda x: -x[1])))
 
     legend = "".join(
         f'<span class="sw" style="background:rgb{CLASSES[k][1]}"></span>{CLASSES[k][0]} ({counts.get(CLASSES[k][0], 0):,})<br>'
         for k in sorted(CLASSES))
     info = (f"<b>{session.name}</b><br>{nv:,} вершин · {nf:,} треугольников<br>"
             f"{dims[0]:.2f} × {dims[1]:.2f} × {dims[2]:.2f} м (X × высота × Z)<br><br>{legend}<br>"
+            f"{extra_info}"
             "мышь: вращать / колесо / правая кнопка<br>C — потолок · W — каркас")
 
-    html = (HTML.replace("__TITLE__", session.name)
+    return (HTML.replace("__TITLE__", session.name)
                 .replace("__INFO__", info)
                 .replace("__POS__", b64(verts.astype("<f4")))
                 .replace("__COL__", b64(vcol))
                 .replace("__IDX_REST__", b64(idx_rest.astype("<u4")))
                 .replace("__IDX_CEIL__", b64(idx_ceil.astype("<u4")))
-                .replace("__BBOX__", json.dumps({"min": bmin.tolist(), "max": bmax.tolist()})))
+                .replace("__BBOX__", json.dumps({"min": bmin.tolist(), "max": bmax.tolist()}))
+                .replace("// __EXTRA_JS__", extra_js))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("session", help="папка сессии, например data/sessions/20261003-201659-scan")
+    ap.add_argument("--no-open", action="store_true", help="не открывать браузер")
+    args = ap.parse_args()
+
+    session = Path(args.session)
+    html = build_viewer_html(session)
     out = session / "scan" / "mesh_view.html"
     out.write_text(html, encoding="utf-8")
     print(f"\nПросмотр:      {out}")
