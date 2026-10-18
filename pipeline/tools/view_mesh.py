@@ -68,12 +68,16 @@ HTML = """<!doctype html>
  html,body{margin:0;height:100%;background:#15181d;color:#e8e8e8;font:13px -apple-system,Helvetica,Arial,sans-serif;overflow:hidden}
  #info{position:absolute;top:12px;left:12px;background:rgba(0,0,0,.55);padding:10px 12px;border-radius:8px;line-height:1.5}
  .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:middle}
+ #infoToggle{display:block;margin:0 0 6px auto;background:rgba(255,255,255,.12);color:#e8e8e8;border:1px solid rgba(255,255,255,.3);border-radius:5px;padding:2px 8px;font:inherit;cursor:pointer}
+ #infoToggle:hover{background:rgba(255,255,255,.25)}
+ #info.collapsed #infoBody{display:none}
+ #info.collapsed #infoToggle{margin:0}
 </style>
 <script type="importmap">
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
             "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}
 </script></head>
-<body><div id="info">__INFO__</div>
+<body><div id="info"><button id="infoToggle" title="Hide or show the legend (L)">Hide legend</button><div id="infoBody">__INFO__</div></div>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -117,10 +121,36 @@ scene.add(new THREE.AxesHelper(0.5)); // начало системы W: X кра
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth/window.innerHeight, 0.01, 200);
 camera.position.set(center.x + size*0.9, center.y + size*1.1, center.z + size*0.9);
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.copy(center); controls.update();
+controls.target.copy(center);
+controls.zoomToCursor = true;          // колесо приближает к точке под курсором, а не к центру скана
+controls.minDistance = 0.05;
+controls.maxDistance = size * 10;
+controls.update();
+
+// Двойной клик по скану — сделать эту точку центром вращения (камера сдвигается вместе с ней).
+const picker = new THREE.Raycaster();
+renderer.domElement.addEventListener('dblclick', e => {
+  const p = new THREE.Vector2(e.clientX / window.innerWidth * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
+  picker.setFromCamera(p, camera);
+  const hit = picker.intersectObjects([rest, ceil].filter(m => m.visible))[0];
+  if (!hit) return;
+  const shift = hit.point.clone().sub(controls.target);
+  controls.target.add(shift);
+  camera.position.add(shift);
+  controls.update();
+});
 
 window.addEventListener('resize', ()=>{camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth, window.innerHeight);});
+// Legend panel: the button (or the L key) hides and shows it.
+const infoPanel = document.getElementById('info');
+const infoToggle = document.getElementById('infoToggle');
+function toggleInfo(){
+  infoPanel.classList.toggle('collapsed');
+  infoToggle.textContent = infoPanel.classList.contains('collapsed') ? 'Show legend' : 'Hide legend';
+}
+infoToggle.addEventListener('click', toggleInfo);
 window.addEventListener('keydown', e=>{
+  if(e.key==='l'||e.key==='L'){toggleInfo();}
   if(e.key==='c'||e.key==='C'){ceil.visible=!ceil.visible;}
   if(e.key==='w'||e.key==='W'){rest.material.wireframe=!rest.material.wireframe;ceil.material.wireframe=rest.material.wireframe;}
 });
@@ -168,7 +198,8 @@ def build_viewer_html(session: Path, extra_js: str = "", extra_info: str = "", v
     info = (f"<b>{session.name}</b><br>{nv:,} vertices · {nf:,} triangles<br>"
             f"{dims[0]:.2f} × {dims[1]:.2f} × {dims[2]:.2f} m (X × height × Z)<br><br>{legend}<br>"
             f"{extra_info}"
-            "Mouse: drag to rotate · wheel to zoom · right-drag to pan<br>C — ceiling · W — wireframe")
+            "Mouse: drag to rotate · wheel to zoom toward the cursor · right-drag to pan<br>"
+            "Double-click — rotate around that point · C — ceiling · W — wireframe · L — legend")
 
     return (HTML.replace("__TITLE__", session.name)
                 .replace("__INFO__", info)
