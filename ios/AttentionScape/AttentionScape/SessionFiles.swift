@@ -53,6 +53,8 @@ struct FrameMeta: Codable {
     var wall_time_utc: String
     var image: ImageInfo
     var camera: CameraInfo
+    /// Номер записи (Record → Stop) внутри сессии: 1, 2, 3… — например, по одной на комнату.
+    var take: Int? = nil
 }
 
 enum SessionFiles {
@@ -214,6 +216,30 @@ enum SessionFiles {
             return Int(name.dropLast(5))
         }
         return (used.max() ?? 0) + 1
+    }
+
+    /// Номер следующей записи: на 1 больше, чем у последнего записанного кадра.
+    static func nextTake(framesDir: URL) -> Int {
+        let last = nextFrameIndex(framesDir: framesDir) - 1
+        guard last > 0 else { return 1 }
+        let url = framesDir.appendingPathComponent(String(format: "%06d.json", last))
+        guard let data = try? Data(contentsOf: url),
+              let meta = try? JSONDecoder().decode(FrameMeta.self, from: data) else { return 2 }
+        return (meta.take ?? 1) + 1
+    }
+
+    /// Все кадры сессии (метаданные), по порядку номеров.
+    static func loadFrameMetas(sessionDir: URL) -> [FrameMeta] {
+        let dir = sessionDir
+            .appendingPathComponent("capture", isDirectory: true)
+            .appendingPathComponent("frames", isDirectory: true)
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? [])
+            .filter { $0.hasSuffix(".json") }
+            .sorted()
+        let decoder = JSONDecoder()
+        return names.compactMap { name in
+            (try? Data(contentsOf: dir.appendingPathComponent(name))).flatMap { try? decoder.decode(FrameMeta.self, from: $0) }
+        }
     }
 
     /// simd хранит матрицы по столбцам; в JSON пишем построчно (data_spec.md, раздел 2).
