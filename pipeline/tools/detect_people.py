@@ -159,6 +159,7 @@ def main():
     ap.add_argument("--model", default="yolo11s-pose.pt", help="модель YOLO pose (скачается сама)")
     ap.add_argument("--conf", type=float, default=0.5, help="порог уверенности для людей")
     ap.add_argument("--width", type=int, default=1280, help="ширина размеченных кадров")
+    ap.add_argument("--imgsz", type=int, default=1280, help="размер входа детектора (больше — лучше видны дальние люди)")
     args = ap.parse_args()
 
     session = Path(args.session)
@@ -183,11 +184,18 @@ def main():
         print(f"Кадры повёрнуты на {90 * k0}° относительно вертикали — разворачиваю перед распознаванием")
 
     result_frames = []
+    current_take = None
     for frame in frames:
+        if frame.take != current_take:
+            # Новая запись (например, штатив в другой комнате): прежние треки не продолжаем.
+            if current_take is not None:
+                print(f"--- запись {frame.take}")
+            tracker.tracks = []
+            current_take = frame.take
         image = Image.open(frame.image_path).convert("RGB")
         k = upright_rotation(frame)
         upright = rotate_image(image, k)
-        res = model.predict(upright, conf=args.conf, classes=[0], verbose=False)[0]
+        res = model.predict(upright, conf=args.conf, classes=[0], imgsz=args.imgsz, verbose=False)[0]
         people, kxy_list = [], []
 
         def to_frame(points, k=k, frame=frame):
@@ -221,7 +229,7 @@ def main():
         annotate(vis, people, kxy_list, to_vis, font)
         vis.save(out_dir / f"annotated_{frame.index:06d}.jpg", quality=88)
 
-        result_frames.append({"index": frame.index, "timestamp": frame.timestamp,
+        result_frames.append({"index": frame.index, "timestamp": frame.timestamp, "take": frame.take,
                               "camera_w": [round(float(x), 3) for x in frame.T_world_from_cam_ar[:3, 3]],
                               "people": people})
         summary = ", ".join(

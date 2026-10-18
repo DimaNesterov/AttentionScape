@@ -101,8 +101,9 @@ def faces_to_vertices(mesh: Mesh, per_face):
 
 
 def write_results(session_dir: Path, session_info: dict, mesh: Mesh, attention_v, coverage_v,
-                  time_range, params: dict):
-    """results/attention.json + attention_f32.bin по docs/data_spec.md (раздел 4.4), один временной интервал."""
+                  time_range, params: dict, extra: dict | None = None):
+    """results/attention.json + attention_f32.bin по docs/data_spec.md (раздел 4.4), один временной интервал.
+    extra — дополнительные поля верхнего уровня (например, rooms)."""
     out = Path(session_dir) / "results"
     out.mkdir(exist_ok=True)
     meta = {
@@ -115,6 +116,7 @@ def write_results(session_dir: Path, session_info: dict, mesh: Mesh, attention_v
         "layout": "attention[t][v], затем coverage[v]",
         "normalization": "density_per_m2",
         "params": params,
+        **(extra or {}),
     }
     (out / "attention.json").write_text(json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
     np.concatenate([np.asarray(attention_v, "<f4"), np.asarray(coverage_v, "<f4")]).tofile(out / "attention_f32.bin")

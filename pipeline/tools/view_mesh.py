@@ -165,10 +165,10 @@ def build_viewer_html(session: Path, extra_js: str = "", extra_info: str = "", v
     legend = legend_html if legend_html is not None else "".join(
         f'<span class="sw" style="background:rgb{CLASSES[k][1]}"></span>{CLASSES[k][0]} ({counts.get(CLASSES[k][0], 0):,})<br>'
         for k in sorted(CLASSES))
-    info = (f"<b>{session.name}</b><br>{nv:,} вершин · {nf:,} треугольников<br>"
-            f"{dims[0]:.2f} × {dims[1]:.2f} × {dims[2]:.2f} м (X × высота × Z)<br><br>{legend}<br>"
+    info = (f"<b>{session.name}</b><br>{nv:,} vertices · {nf:,} triangles<br>"
+            f"{dims[0]:.2f} × {dims[1]:.2f} × {dims[2]:.2f} m (X × height × Z)<br><br>{legend}<br>"
             f"{extra_info}"
-            "мышь: вращать / колесо / правая кнопка<br>C — потолок · W — каркас")
+            "Mouse: drag to rotate · wheel to zoom · right-drag to pan<br>C — ceiling · W — wireframe")
 
     return (HTML.replace("__TITLE__", session.name)
                 .replace("__INFO__", info)

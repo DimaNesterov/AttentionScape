@@ -1,5 +1,10 @@
+import ARKit
+import CoreGraphics
+import CoreImage
+import CoreVideo
 import Darwin
 import Foundation
+import ImageIO
 import simd
 
 /// Содержимое sessions/<id>/session.json (см. docs/data_spec.md, раздел 4.1).
@@ -23,6 +28,7 @@ struct SessionSummary: Identifiable, Hashable {
     let vertices: Int
     let faces: Int
     let frames: Int
+    let hasMap: Bool    // есть results/attention.json + attention_f32.bin
 }
 
 private struct SessionHeader: Decodable {
@@ -111,9 +117,18 @@ enum SessionFiles {
                     url: dir,
                     vertices: header?.n_vertices ?? 0,
                     faces: header?.n_faces ?? 0,
-                    frames: frameCount(sessionDir: dir))
+                    frames: frameCount(sessionDir: dir),
+                    hasMap: hasAttentionMap(sessionDir: dir))
             }
             .sorted { $0.id > $1.id }
+    }
+
+    /// Карта внимания с Mac уже импортирована в сессию.
+    static func hasAttentionMap(sessionDir: URL) -> Bool {
+        let results = sessionDir.appendingPathComponent("results", isDirectory: true)
+        let fm = FileManager.default
+        return fm.fileExists(atPath: results.appendingPathComponent("attention.json").path)
+            && fm.fileExists(atPath: results.appendingPathComponent("attention_f32.bin").path)
     }
 
     static func frameCount(sessionDir: URL) -> Int {
@@ -208,5 +223,52 @@ enum SessionFiles {
 
     static func rowMajor(_ m: simd_float3x3) -> [Float] {
         (0..<3).flatMap { r in [m.columns.0[r], m.columns.1[r], m.columns.2[r]] }
+    }
+}
+
+/// Готовый к записи кадр: JPEG + поза и внутренние параметры камеры.
+/// Собирается вне главного потока (кадр высокого разрешения приходит асинхронно), поэтому Sendable.
+nonisolated struct FramePacket: Sendable {
+    let jpeg: Data
+    let width: Int
+    let height: Int
+    let timestamp: Double
+    let transformRowMajor: [Float]
+    let intrinsicsRowMajor: [Float]
+    let trackingNormal: Bool
+
+    /// Кадры шире maxWidth уменьшаются; внутренние параметры камеры пересчитываются под новый размер.
+    nonisolated static func make(from frame: ARFrame, maxWidth: Int, quality: Double = 0.85) -> FramePacket? {
+        let buffer = frame.capturedImage                     // ландшафтная ориентация сенсора, без поворота
+        let sourceWidth = CVPixelBufferGetWidth(buffer)
+        let sourceHeight = CVPixelBufferGetHeight(buffer)
+        let scale = sourceWidth > maxWidth ? Double(maxWidth) / Double(sourceWidth) : 1.0
+        let width = Int((Double(sourceWidth) * scale).rounded())
+        let height = Int((Double(sourceHeight) * scale).rounded())
+
+        var image = CIImage(cvPixelBuffer: buffer)
+        if scale < 1.0 {
+            image = image
+                .applyingFilter("CILanczosScaleTransform",
+                                parameters: [kCIInputScaleKey: scale, kCIInputAspectRatioKey: 1.0])
+                .cropped(to: CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        let options: [CIImageRepresentationOption: Any] = [
+            CIImageRepresentationOption(rawValue: kCGImageDestinationLossyCompressionQuality as String): quality
+        ]
+        guard let jpeg = CIContext().jpegRepresentation(of: image, colorSpace: CGColorSpaceCreateDeviceRGB(),
+                                                        options: options) else { return nil }
+
+        let K = frame.camera.intrinsics                      // fx, fy, cx, cy — для исходного размера кадра
+        let s = Float(scale)
+        let intrinsics: [Float] = [K.columns.0.x * s, K.columns.1.x * s, K.columns.2.x * s,
+                                   K.columns.0.y * s, K.columns.1.y * s, K.columns.2.y * s,
+                                   0, 0, 1]
+        let T = frame.camera.transform
+        let transform: [Float] = (0..<4).flatMap { r in [T.columns.0[r], T.columns.1[r], T.columns.2[r], T.columns.3[r]] }
+        var normal = false
+        if case .normal = frame.camera.trackingState { normal = true }
+        return FramePacket(jpeg: jpeg, width: width, height: height, timestamp: frame.timestamp,
+                           transformRowMajor: transform, intrinsicsRowMajor: intrinsics, trackingNormal: normal)
     }
 }

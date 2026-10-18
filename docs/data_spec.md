@@ -1,4 +1,4 @@
-# AttentionScape — спецификация данных v0.1
+# AttentionScape — спецификация данных v0.2
 
 Контракт между iOS-приложением (Swift, Xcode) и конвейером обработки (Python, VS Code).
 Обе стороны читают и пишут данные **только** в этих форматах. Любое изменение — новая версия этого файла.
@@ -51,7 +51,7 @@ sessions/<session_id>/
 ├── scan/
 │   ├── mesh.ply                ← LiDAR-меш в системе W
 │   ├── worldmap.arworldmap     ← карта мира ARKit (читает только iPhone)
-│   └── roomplan.usdz           ← опционально, структура помещения
+│   └── rooms.json              ← опционально, отметки комнат (Mark room)
 ├── capture/
 │   ├── frames/000001.jpg       ← кадры (jpg или heic)
 │   ├── frames/000001.json      ← метаданные кадра
@@ -101,6 +101,7 @@ sessions/<session_id>/
     "K": [5900.0,0,4032.0, 0,5900.0,3024.0, 0,0,1],
     "tracking_state": "normal"
   },
+  "take": 1,
   "depth": {
     "file": "depth/000001.bin",
     "width": 256, "height": 192,
@@ -111,8 +112,26 @@ sessions/<session_id>/
 
 - `timestamp` — время кадра ARKit (секунды с момента загрузки системы); используется для синхронизации.
 - `tracking_state` — `normal` | `limited` | `notAvailable`. Кадры не в состоянии `normal` конвейер пропускает.
+- `take` — номер записи (Record → Stop) внутри сессии, 1, 2, 3… Новая запись — обычно новое место штатива
+  (например, другая комната). Треки людей не переходят между записями. Если поля нет (сессии до v0.2),
+  записи определяются по паузам во времени больше 5 с.
 - Блок `depth` опционален. Глубина — float32, метры, `width × height` значений, построчно.
 - Числа в примере условные.
+
+### 4.3a `scan/rooms.json` (опционально)
+
+```json
+{
+  "schema": "attentionscape/rooms/0.1",
+  "rooms": [
+    { "name": "Kitchen", "position": [1.20, 1.31, -2.45], "created_utc": "2026-10-17T13:40:00Z" }
+  ]
+}
+```
+
+- `position` — где стоял телефон при нажатии Mark room, система W (метры). Важны только x и z.
+- Отдельный файл: меш и `mesh_sha256` от отметок не меняются. Новая отметка с тем же названием заменяет старую.
+- Python делит скан на комнаты по этим отметкам (`pipeline/ascape/rooms.py`).
 
 ### 4.4 `results/attention.json` и `results/attention_f32.bin`
 
@@ -126,9 +145,14 @@ sessions/<session_id>/
   "time_bin_edges": [0.0, 10.0, 20.0],
   "layout": "attention[t][v], затем coverage[v]",
   "normalization": "raw",
-  "params": { "sigma_head_deg": 15, "sigma_eyes_deg": 6, "models": {} }
+  "params": { "sigma_head_deg": 15, "sigma_eyes_deg": 6, "models": {} },
+  "rooms": [ { "name": "Kitchen", "share": 0.31, "position": [1.20, 1.31, -2.45] } ],
+  "rooms_other_share": 0.02
 }
 ```
+
+- `rooms`, `rooms_other_share` — только если есть `scan/rooms.json`: доля всего внимания по каждой комнате
+  и доля, пришедшаяся на поверхности вне размеченных комнат.
 
 `attention_f32.bin` — подряд два массива float32:
 

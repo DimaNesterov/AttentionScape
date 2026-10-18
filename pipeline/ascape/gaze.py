@@ -1,8 +1,10 @@
 """
 AttentionScape — направление взгляда в мировой системе W.
 
-Три источника, от точного к грубому:
-    face — модель поворота головы по лицу (6DRepNet), конус 15°;
+Источники, от точного к грубому:
+    eyes — модель взгляда по глазам (MobileGaze, обучена на Gaze360), конус 12°;
+    head — модель поворота головы (6DRepNet), конус 15°;
+       для видимого лица оба результата смешиваются: чем крупнее лицо, тем больше вес глаз;
     body — направление корпуса по линии плеч в 3D, конус 30°;
     away — «смотрит от камеры», конус 45°.
 """
@@ -15,10 +17,15 @@ UP = np.array([0.0, 1.0, 0.0])
 
 # метод: (σ конуса в радианах, вес замера в карте внимания)
 METHODS = {
-    "face": (np.radians(15.0), 1.0),
+    "eyes": (np.radians(12.0), 1.0),
+    "head": (np.radians(15.0), 1.0),
     "body": (np.radians(30.0), 0.6),
     "away": (np.radians(45.0), 0.3),
 }
+
+# Ширина лица в пикселях: меньше EYES_MIN_PX — только голова, больше EYES_FULL_PX — только глаза.
+EYES_MIN_PX = 40.0
+EYES_FULL_PX = 120.0
 
 
 def face_visible(kc, min_conf: float = 0.5) -> bool:
@@ -65,6 +72,26 @@ def local_gaze_from_angles(pitch_deg: float, yaw_deg: float):
     Соглашение — как в draw_axis из 6DRepNet: yaw = pitch = 0 — смотрит прямо в камеру."""
     p, y = np.radians(pitch_deg), np.radians(yaw_deg)
     return np.array([-np.sin(y), -np.cos(y) * np.sin(p), -np.cos(y) * np.cos(p)])
+
+
+def local_gaze_from_eye_model(pitch_rad: float, yaw_rad: float):
+    """Углы MobileGaze/UniFace (радианы; pitch > 0 — вверх) → взгляд в «осях вырезки».
+    Соглашение — как в uniface.draw.draw_gaze: pitch = yaw = 0 — смотрит прямо в камеру."""
+    return np.array([-np.sin(yaw_rad) * np.cos(pitch_rad), -np.sin(pitch_rad), -np.cos(yaw_rad) * np.cos(pitch_rad)])
+
+
+def eye_weight(face_width_px: float) -> float:
+    """Насколько доверять глазам при такой ширине лица (0 — только голова, 1 — только глаза)."""
+    return float(np.clip((face_width_px - EYES_MIN_PX) / (EYES_FULL_PX - EYES_MIN_PX), 0.0, 1.0))
+
+
+def blend_directions(head_dir, eye_dir, w_eye: float):
+    d = (1.0 - w_eye) * np.asarray(head_dir, dtype=float) + w_eye * np.asarray(eye_dir, dtype=float)
+    return d / np.linalg.norm(d)
+
+
+def blended_sigma(w_eye: float) -> float:
+    return float((1.0 - w_eye) * METHODS["head"][0] + w_eye * METHODS["eyes"][0])
 
 
 def gaze_world_from_local(frame: Frame, g_local, crop_center_uv):

@@ -30,6 +30,7 @@ class Frame:
     K: np.ndarray               # (3, 3)
     T_world_from_cam_ar: np.ndarray   # (4, 4), соглашение ARKit
     tracking_state: str
+    take: int = 1               # номер записи (Record → Stop); у старых сессий — по паузам во времени
 
     @property
     def T_world_from_cam_cv(self) -> np.ndarray:
@@ -88,8 +89,25 @@ def load_frames(session_dir: Path, only_normal: bool = True) -> list[Frame]:
             K=np.array(cam["K"], dtype=np.float64).reshape(3, 3),
             T_world_from_cam_ar=np.array(cam["T_world_from_camera_ar"], dtype=np.float64).reshape(4, 4),
             tracking_state=cam.get("tracking_state", "?"),
+            take=meta.get("take") or 0,
         ))
+    _fill_takes(frames)
     return frames
+
+
+TAKE_GAP_S = 5.0
+
+
+def _fill_takes(frames: list[Frame]) -> None:
+    """Кадрам без номера записи (старые сессии) — номер по паузам: новая запись после паузы > 5 с."""
+    if all(f.take for f in frames):
+        return
+    take, last = 0, None
+    for f in frames:
+        if last is None or f.timestamp - last > TAKE_GAP_S or f.timestamp < last:
+            take += 1
+        f.take = take
+        last = f.timestamp
 
 
 def project_raw(points_w: np.ndarray, frame: Frame):
